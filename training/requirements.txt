@@ -1,0 +1,17 @@
+unsloth @ git+https://github.com/unslothai/unsloth.git
+torch>=2.3.0
+transformers>=4.44.0
+datasets>=2.20.0
+trl>=0.9.6
+peft>=0.12.0
+accelerate>=0.33.0
+bitsandbytes>=0.43.0
+wandb>=0.17.0
+scipy
+sentencepiece
+protobuf
+anthropic>=0.34.0
+pandas
+scikit-learn
+tqdm
+python-dotenv

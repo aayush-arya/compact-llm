@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Env files
+.env
+.env.local
+!.env.example
+!.env.local.example
+
+# Data & model artifacts (large; regenerate via training/ scripts)
+backend/data.db
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+training/outputs/
+training/data/
+outputs/
+
+# W&B
+wandb/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log

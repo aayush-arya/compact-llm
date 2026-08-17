@@ -1,0 +1,16 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+httpx>=0.27.0
+python-multipart>=0.0.9
+
+# Only required when MODEL_BACKEND=transformers (real GPU inference).
+# Left commented out so the API + mock backend run without a GPU/CUDA install.
+# unsloth @ git+https://github.com/unslothai/unsloth.git
+# torch>=2.3.0
+# peft>=0.12.0
+# transformers>=4.44.0
+# bitsandbytes>=0.43.0
