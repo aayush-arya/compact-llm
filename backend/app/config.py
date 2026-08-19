@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     ollama_finetuned_model: str = "resume-jd-scorer"
     ollama_base_model: str = "gemma3:4b"
 
-    anthropic_api_key: str | None = None
+    gemini_api_key: str | None = None
     cors_origins: list[str] = ["http://localhost:3000"]
 
 

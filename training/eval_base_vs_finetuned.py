@@ -4,16 +4,16 @@ held-out test split. This is the script that produces docs/benchmark_table.md
 and the JSON the /eval/benchmark API endpoint serves.
 
 Metrics per approach:
-    - Pearson & Spearman correlation (predicted score vs human/Claude label)
+    - Pearson & Spearman correlation (predicted score vs human/Gemini label)
     - MAE (mean absolute error)
-    - rationale quality, graded 1-5 by Claude as an LLM judge
+    - rationale quality, graded 1-5 by Gemini as an LLM judge
     - mean latency per request (seconds)
 
 Run AFTER training finishes, on data/processed/test.jsonl only (never used
 during training or hyperparameter selection).
 
 Usage:
-    export ANTHROPIC_API_KEY=...   # for the LLM-judge rationale grading
+    export GEMINI_API_KEY=...   # for the LLM-judge rationale grading
     python eval_base_vs_finetuned.py \
         --test_file data/processed/test.jsonl \
         --adapter_dir outputs/adapter \
@@ -21,6 +21,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -95,6 +96,28 @@ def run_hf_generation(model, tokenizer, prompt: str, max_new_tokens: int = 150) 
     return text, latency
 
 
+def _judge_with_retry(judge_client, judge_model: str, score: int, rationale: str) -> str:
+    """gemini-3.5-flash-lite's free tier is 15 requests/minute -- retry with
+    backoff on 429 rather than failing the whole eval run over a rate limit."""
+    from google.genai.errors import APIError
+
+    backoff = 5.0
+    for attempt in range(5):
+        try:
+            resp = judge_client.models.generate_content(
+                model=judge_model,
+                contents=JUDGE_PROMPT.format(score=score, rationale=rationale),
+            )
+            return resp.text or ""
+        except APIError as e:
+            if e.code in (429, 500, 503) and attempt < 4:
+                time.sleep(backoff)
+                backoff *= 1.8
+                continue
+            raise
+    return ""
+
+
 def evaluate_approach(name: str, gen_fn, test_rows: list[dict], judge_client, judge_model: str) -> dict:
     preds, labels, latencies, judge_scores = [], [], [], []
     for row in tqdm(test_rows, desc=name):
@@ -107,11 +130,8 @@ def evaluate_approach(name: str, gen_fn, test_rows: list[dict], judge_client, ju
         labels.append(gold_score)
         latencies.append(latency)
 
-        judge_resp = judge_client.messages.create(
-            model=judge_model, max_tokens=5,
-            messages=[{"role": "user", "content": JUDGE_PROMPT.format(score=pred_score, rationale=pred_rationale)}],
-        )
-        m = re.search(r"\d", judge_resp.content[0].text)
+        judge_text = _judge_with_retry(judge_client, judge_model, pred_score, pred_rationale)
+        m = re.search(r"\d", judge_text)
         judge_scores.append(int(m.group()) if m else 3)
 
     preds_a, labels_a = np.array(preds), np.array(labels)
@@ -135,20 +155,22 @@ def main():
     ap.add_argument("--test_file", default="data/processed/test.jsonl")
     ap.add_argument("--base_model", default="unsloth/gemma-3-4b-it-bnb-4bit")
     ap.add_argument("--adapter_dir", default="outputs/adapter")
-    ap.add_argument("--judge_model", default="claude-sonnet-5")
+    # gemini-3.6-flash's free tier is capped at 20 requests/day; gemini-3.5-flash-lite
+    # has a workable 15 requests/minute instead. See training/prepare_dataset.py.
+    ap.add_argument("--judge_model", default="gemini-3.5-flash-lite")
     ap.add_argument("--max_examples", type=int, default=None)
     ap.add_argument("--out_json", default="../docs/benchmark_results.json")
     ap.add_argument("--out_md", default="../docs/benchmark_table.md")
     args = ap.parse_args()
 
     from unsloth import FastLanguageModel
-    from anthropic import Anthropic
+    from google import genai
 
     test_rows = [json.loads(l) for l in open(args.test_file, encoding="utf-8")]
     if args.max_examples:
         test_rows = test_rows[: args.max_examples]
 
-    judge_client = Anthropic()
+    judge_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
     print("Loading base model...")
     base_model, tokenizer = FastLanguageModel.from_pretrained(

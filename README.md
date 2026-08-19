@@ -34,7 +34,7 @@ and quality. This project is built to make that comparison visible, not just ass
 ```mermaid
 flowchart LR
     subgraph Training["Training (Colab / Kaggle GPU)"]
-        A[Kaggle resume CSV] --> B[prepare_dataset.py<br/>Claude generates JDs + labels]
+        A[Kaggle resume CSV] --> B[prepare_dataset.py<br/>Gemini generates JDs + labels]
         B --> C[train.jsonl / val.jsonl / test.jsonl]
         C --> D[train_unsloth_qlora.py<br/>Gemma-3 4B + QLoRA]
         D -->|logs| WANDB[(Weights & Biases)]
@@ -77,7 +77,7 @@ flowchart LR
 
 ```
 training/
-  prepare_dataset.py       # resumes + Claude-generated JDs/labels -> instruction-tuning JSONL
+  prepare_dataset.py       # resumes + Gemini-generated JDs/labels -> instruction-tuning JSONL
   train_unsloth_qlora.py   # QLoRA fine-tune, Unsloth + W&B
   eval_base_vs_finetuned.py# base zero-shot vs few-shot vs fine-tuned, on held-out test set
   export_gguf.py           # merged model -> GGUF for llama.cpp/Ollama
@@ -101,7 +101,7 @@ pip install -r training/requirements.txt
 # Download the Kaggle "Resume Dataset": https://www.kaggle.com/datasets/snehaanbhawal/resume-dataset
 kaggle datasets download -d snehaanbhawal/resume-dataset -p data/raw --unzip
 
-export ANTHROPIC_API_KEY=...
+export GEMINI_API_KEY=...  # free tier: https://aistudio.google.com/apikey
 python training/prepare_dataset.py --input data/raw/Resume.csv --n 900
 # -> data/processed/{train,val,test}.jsonl  (~1800 examples: 2 per resume)
 ```
@@ -149,11 +149,11 @@ See `backend/.env.example` for all config options.
 
 ## Dataset & labeling honesty
 
-Labels are **synthetic**: Claude generates a plausible job description for each real resume
-(one "matching," one "mismatched," to spread the score distribution), then Claude grades the
+Labels are **synthetic**: Gemini (free tier) generates a plausible job description for each real resume
+(one "matching," one "mismatched," to spread the score distribution), then Gemini grades the
 pair 0-100 with a rationale. That means:
 
-- The dataset teaches the small model to imitate *Claude's judgment* of resume/JD fit, not
+- The dataset teaches the small model to imitate *Gemini's judgment* of resume/JD fit, not
   verified hiring outcomes or real recruiter labels.
 - It's a legitimate way to prove the fine-tuning mechanics work and to measure a small model
   matching/approaching a much larger one's judgment on a narrow task — it is not evidence the
@@ -175,7 +175,7 @@ pair 0-100 with a rationale. That means:
 ## What I'd do differently with more data/compute
 
 - Real recruiter labels (even a few hundred) blended with the synthetic set, to sanity-check
-  whether Claude's judgments and human judgments actually agree.
+  whether Gemini's judgments and human judgments actually agree.
 - A larger held-out test set — 10% of ~1,800 examples gives noisy correlation estimates.
 - Try full fine-tuning or a larger LoRA rank on more compute, to see where the quality/cost
   curve actually bends for this task.

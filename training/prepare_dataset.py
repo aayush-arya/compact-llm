@@ -4,46 +4,89 @@ Build the resume <-> job-description relevance dataset.
 Pipeline:
   1. Read real resumes from the Kaggle "Resume Dataset" CSV
      (https://www.kaggle.com/datasets/snehaanbhawal/resume-dataset).
-  2. For each resume, use Claude as a synthetic-JD generator to produce
+  2. For each resume, use Gemini as a synthetic-JD generator to produce
      one "matching" JD (same field, plausible fit) and one "mismatched"
      JD (different field / seniority), so the label distribution isn't
      bunched at the top end.
-  3. Use Claude again as a labeling oracle: given (resume, JD), produce
+  3. Use Gemini again as a labeling oracle: given (resume, JD), produce
      a 0-100 relevance score + 2-sentence rationale.
   4. Emit instruction-tuning examples and split 80/10/10 train/val/test.
 
 This is a synthetic-label dataset. Documented explicitly (see README) as
-a limitation: labels reflect Claude's judgment, not verified hiring
+a limitation: labels reflect Gemini's judgment, not verified hiring
 outcomes. Good enough to prove a fine-tune can specialize a small model
 toward this scoring behavior; not a substitute for real recruiter labels.
 
 Usage:
-    export ANTHROPIC_API_KEY=...
+    export GEMINI_API_KEY=...   # free tier: https://aistudio.google.com/apikey
     python prepare_dataset.py --input data/raw/Resume.csv --n 1500
 
 Resumable: progress is checkpointed to --checkpoint after every example,
 so a killed/rate-limited run can just be restarted.
 """
 import argparse
+import collections
 import concurrent.futures
 import json
 import os
 import random
 import re
 import sys
+import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
-from anthropic import Anthropic, APIStatusError
+from google import genai
+from google.genai.errors import APIError
 from tqdm import tqdm
 
-GENERATOR_MODEL = "claude-sonnet-5"
-GRADER_MODEL = "claude-sonnet-5"
+# gemini-3.6-flash's free tier is capped at 20 requests/day -- unusable for
+# a few thousand calls. gemini-3.5-flash-lite's free tier allows 15
+# requests/minute AND 500 requests/day. JD-generation and grading are
+# combined into a single call per example (see COMBINED_PROMPT below) so
+# the daily cap buys 500 examples/day instead of 250.
+MODEL = "gemini-3.5-flash-lite"
+MAX_REQUESTS_PER_MINUTE = 14
 
-JD_GEN_PROMPT = """You are helping build a training dataset for a resume-screening model.
 
-Given the resume below, write a realistic job description.
+def _seconds_until_pacific_midnight() -> float:
+    """Google's free-tier daily quota resets at midnight Pacific time."""
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    reset = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (reset - now).total_seconds()
+
+
+class RateLimiter:
+    """Caps calls to a rolling per-minute window, shared across all worker threads."""
+
+    def __init__(self, max_per_minute: int):
+        self.max_per_minute = max_per_minute
+        self.timestamps: collections.deque = collections.deque()
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                while self.timestamps and now - self.timestamps[0] > 60:
+                    self.timestamps.popleft()
+                if len(self.timestamps) < self.max_per_minute:
+                    self.timestamps.append(now)
+                    return
+                sleep_for = 60 - (now - self.timestamps[0]) + 0.1
+            time.sleep(sleep_for)
+
+
+rate_limiter = RateLimiter(MAX_REQUESTS_PER_MINUTE)
+
+COMBINED_PROMPT = """You are helping build a training dataset for a resume-screening model. Do
+two things in a single response, playing job-description writer then recruiter grader.
+
+Step 1: Given the resume below, write a realistic job description (150-300
+words: a title line, then responsibilities and requirements).
 Mode: {mode}
 - "matching": a job this candidate would be a strong-to-decent fit for (same
   general field/seniority as the resume, but don't make it a perfect echo of
@@ -51,26 +94,18 @@ Mode: {mode}
 - "mismatched": a job in a different field, seniority level, or requiring
   skills this candidate mostly lacks, so a real screener would rate it a
   weak match.
+Do not mention the resume or the candidate in the job description text.
 
-Write 150-300 words: a title line, then responsibilities and requirements.
-Do not mention the resume or the candidate. Output ONLY the job description
-text, no preamble, no markdown headers.
-
-Resume:
-{resume}
-"""
-
-SCORE_PROMPT = """You are an experienced technical recruiter scoring resume-to-job-description
-fit. Score strictly on evidence in the resume: skills, years of relevant
-experience, domain overlap, seniority match. Do not reward keyword stuffing.
+Step 2: As an experienced technical recruiter, score how well the resume
+matches the job description you just wrote (0-100). Score strictly on
+evidence in the resume: skills, years of relevant experience, domain
+overlap, seniority match. Do not reward keyword stuffing.
 
 Resume:
 {resume}
 
-Job Description:
-{jd}
-
-Respond in EXACTLY this format, nothing else:
+Respond in EXACTLY this format, nothing else, no markdown:
+Job Description: <the job description text>
 Score: <integer 0-100>
 Rationale: <exactly 2 sentences explaining the score, citing specific
 resume/JD evidence>
@@ -82,42 +117,55 @@ INSTRUCTION = (
 )
 
 
-def call_claude(client: Anthropic, model: str, prompt: str, max_tokens: int = 500) -> str:
-    backoff = 2.0
-    for attempt in range(6):
+def call_gemini(client: genai.Client, prompt: str) -> str:
+    backoff = 5.0
+    attempt = 0
+    while True:
+        rate_limiter.acquire()
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return resp.content[0].text.strip()
-        except APIStatusError as e:
-            if e.status_code in (429, 529, 500, 502, 503) and attempt < 5:
+            resp = client.models.generate_content(model=MODEL, contents=prompt)
+            return (resp.text or "").strip()
+        except APIError as e:
+            if "PerDay" in str(e):
+                wait_s = _seconds_until_pacific_midnight() + 300
+                print(f"  [info] daily free-tier quota hit -- sleeping ~{wait_s / 3600:.1f}h until reset...",
+                      file=sys.stderr, flush=True)
+                time.sleep(wait_s)
+                continue  # doesn't count against the attempt budget below
+            if e.code in (429, 500, 503) and attempt < 6:
                 time.sleep(backoff)
-                backoff *= 1.8
+                backoff = min(backoff * 1.8, 60)
+                attempt += 1
                 continue
             raise
-    raise RuntimeError("exhausted retries calling Claude")
+        except OSError:
+            # transient network/DNS hiccup (e.g. brief connectivity loss)
+            if attempt < 6:
+                time.sleep(backoff)
+                backoff = min(backoff * 1.8, 60)
+                attempt += 1
+                continue
+            raise
 
 
-def parse_score(text: str) -> tuple[int, str] | None:
-    m = re.search(r"Score:\s*(\d{1,3})", text)
-    r = re.search(r"Rationale:\s*(.+)", text, re.DOTALL)
-    if not m or not r:
+def parse_combined(text: str) -> tuple[str, int, str] | None:
+    jd_m = re.search(r"Job Description:\s*(.+?)\s*Score:", text, re.DOTALL)
+    score_m = re.search(r"Score:\s*(\d{1,3})", text)
+    rationale_m = re.search(r"Rationale:\s*(.+)", text, re.DOTALL)
+    if not jd_m or not score_m or not rationale_m:
         return None
-    score = max(0, min(100, int(m.group(1))))
-    rationale = " ".join(r.group(1).strip().split())
-    return score, rationale
+    jd = jd_m.group(1).strip()
+    score = max(0, min(100, int(score_m.group(1))))
+    rationale = " ".join(rationale_m.group(1).strip().split())
+    return jd, score, rationale
 
 
-def process_one(client: Anthropic, resume: str, mode: str) -> dict | None:
-    jd = call_claude(client, GENERATOR_MODEL, JD_GEN_PROMPT.format(mode=mode, resume=resume))
-    raw_score = call_claude(client, GRADER_MODEL, SCORE_PROMPT.format(resume=resume, jd=jd))
-    parsed = parse_score(raw_score)
+def process_one(client: genai.Client, resume: str, mode: str) -> dict | None:
+    raw = call_gemini(client, COMBINED_PROMPT.format(mode=mode, resume=resume))
+    parsed = parse_combined(raw)
     if parsed is None:
         return None
-    score, rationale = parsed
+    jd, score, rationale = parsed
     return {
         "instruction": INSTRUCTION,
         "input": f"Resume: {resume}\n\nJob Description: {jd}",
@@ -159,12 +207,13 @@ def main():
                      help="number of resumes to sample (each produces 2 examples: matching + mismatched)")
     ap.add_argument("--out_dir", type=Path, default=Path("data/processed"))
     ap.add_argument("--checkpoint", type=Path, default=Path("data/raw/generation_checkpoint.jsonl"))
-    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--workers", type=int, default=4,
+                     help="concurrency is capped by the global rate limiter regardless of this value")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("Set ANTHROPIC_API_KEY before running this script.")
+    if not os.environ.get("GEMINI_API_KEY"):
+        sys.exit("Set GEMINI_API_KEY before running this script (free tier: https://aistudio.google.com/apikey).")
     if not args.input.exists():
         sys.exit(
             f"Resume CSV not found at {args.input}.\n"
@@ -182,7 +231,7 @@ def main():
     done_keys = {(d["input"][:80], d["meta"]["mode"]) for d in done}
     print(f"Resuming: {len(done)} examples already generated.")
 
-    client = Anthropic()
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     ckpt_f = open(args.checkpoint, "a", encoding="utf-8")
 
     def task(job):
