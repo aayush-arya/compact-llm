@@ -62,11 +62,19 @@ class InferenceEngine:
 
 
 _STOPWORDS = frozenset(
-    "a an the and or but for nor so yet of to in on at by with from as is are was were be been "
-    "being this that these those it its we you they he she our your their my his her i will would "
-    "can could should may might must have has had do does did not no if then than into over under "
-    "about across after before between during without within will work experience role team years "
-    "year strong plus etc via per".split()
+    # articles / conjunctions / prepositions / pronouns / auxiliaries
+    "a an the and or but nor so yet of to in on at by with from as is are was were be been being "
+    "this that these those it its we you they he she our your their my his her i will would can "
+    "could should may might must have has had do does did not no if then than into over under "
+    "about across after before between during without within not "
+    # job-description boilerplate that isn't a skill
+    "work working experience experienced role roles responsibilities responsibility requirements "
+    "required require requires years year strong solid plus etc via per you'll you're we're our "
+    "team teams company companies candidate candidates ideal looking hire hiring join build "
+    "building own owning drive driving design designing help helping ability able comfortable "
+    "track record proven excellent great good nice bonus preferred preference must-have new "
+    "position opportunity growth impact scale scalable world class deep knowledge understanding "
+    "familiarity exposure hands-on day one".split()
 )
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#.\-]*")
 
@@ -93,9 +101,9 @@ def _fit_signal(resume: str, jd: str) -> tuple[float, list[str], int]:
     if not j:
         return 50.0, [], 0
     shared = r & j
-    coverage = len(shared) / len(j)          # fraction of JD requirements the resume hits
+    coverage = len(shared) / len(j)          # fraction of JD keywords the resume hits
     depth = min(1.0, len(resume) / 2200)     # longer resume ~= more evidence to match on
-    true_score = max(0.0, min(100.0, 170 * coverage + 10 * depth + 3))
+    true_score = max(0.0, min(100.0, 220 * coverage + 8 * depth + 5))
     ranked = sorted(shared, key=lambda w: (-len(w), w))[:6]
     return true_score, ranked, len(j - r)
 
@@ -116,7 +124,7 @@ class MockEngine(InferenceEngine):
 
         if use_adapter:
             jitter = (_seeded_unit(resume, jd, "ft") - 0.5) * 6  # +/- 3
-            score = int(round(max(0, min(100, true_score + jitter))))
+            score = int(round(max(2, min(100, true_score + jitter))))
             if shared:
                 rationale = (
                     f"{self._DISCLAIMER} Resume matches the JD on {', '.join(shared[:4])}; "

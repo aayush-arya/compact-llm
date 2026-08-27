@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db.database import init_db
 from app.models.inference import get_engine
-from app.routers import compare, eval, history, score
+from app.routers import compare, datasets, eval, history, score
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app.include_router(score.router)
 app.include_router(compare.router)
 app.include_router(history.router)
 app.include_router(eval.router)
+app.include_router(datasets.router)
 
 
 @app.get("/health")
