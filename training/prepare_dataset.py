@@ -349,6 +349,29 @@ def stratified_split(rows: list[dict], seed: int) -> dict[str, list[dict]]:
     return {"train": train, "val": val, "test": test}
 
 
+def _write_splits(splits: dict[str, list[dict]], out_dir: Path) -> None:
+    for name, rows in splits.items():
+        out_path = out_dir / f"{name}.jsonl"
+        with open(out_path, "w", encoding="utf-8") as f:
+            for row in rows:
+                clean = {k: row[k] for k in ("instruction", "input", "output")}
+                f.write(json.dumps(clean) + "\n")
+        print(f"{name}: {len(rows)} examples -> {out_path}")
+
+
+def _print_distribution(rows: list[dict]) -> None:
+    scores = [r["meta"]["score"] for r in rows]
+    by_band = collections.Counter(min(4, s // 20) for s in scores)
+    band_labels = ["0-19", "20-39", "40-59", "60-79", "80-100"]
+    dist = "  ".join(f"{band_labels[b]}:{by_band.get(b, 0)}" for b in range(5))
+    print(
+        f"\nTotal: {len(rows)} examples. "
+        f"Score min={min(scores)} max={max(scores)} mean={sum(scores) / len(scores):.1f}"
+    )
+    print(f"Distribution by band: {dist}")
+    print("IMPORTANT: the held-out test.jsonl must not be touched again until eval time.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -385,7 +408,21 @@ def main():
         action="store_true",
         help="print the models the selected provider's key can use, then exit",
     )
+    ap.add_argument(
+        "--resplit",
+        action="store_true",
+        help="skip generation: just re-split an existing --checkpoint (no API key needed)",
+    )
     args = ap.parse_args()
+
+    if args.resplit:
+        rows = load_checkpoint(args.checkpoint)
+        if not rows:
+            sys.exit(f"Nothing to re-split: {args.checkpoint} is empty or missing.")
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        _write_splits(stratified_split(rows, args.seed), args.out_dir)
+        _print_distribution(rows)
+        return
 
     keys = {p: os.environ.get(env) for p, env in PROVIDER_ENV.items()}
     if args.provider == "auto":
@@ -474,25 +511,8 @@ def main():
             "No examples generated -- nothing to split. Check the errors above "
             "(a 401 means the API key in training/.env is wrong or the wrong type)."
         )
-    splits = stratified_split(all_rows, args.seed)
-    for name, rows in splits.items():
-        out_path = args.out_dir / f"{name}.jsonl"
-        with open(out_path, "w", encoding="utf-8") as f:
-            for row in rows:
-                clean = {k: row[k] for k in ("instruction", "input", "output")}
-                f.write(json.dumps(clean) + "\n")
-        print(f"{name}: {len(rows)} examples -> {out_path}")
-
-    scores = [r["meta"]["score"] for r in all_rows]
-    by_band = collections.Counter(min(4, s // 20) for s in scores)
-    band_labels = ["0-19", "20-39", "40-59", "60-79", "80-100"]
-    dist = "  ".join(f"{band_labels[b]}:{by_band.get(b, 0)}" for b in range(5))
-    print(
-        f"\nTotal: {len(all_rows)} examples. "
-        f"Score min={min(scores)} max={max(scores)} mean={sum(scores) / len(scores):.1f}"
-    )
-    print(f"Distribution by band: {dist}")
-    print("IMPORTANT: the held-out test.jsonl must not be touched again until eval time.")
+    _write_splits(stratified_split(all_rows, args.seed), args.out_dir)
+    _print_distribution(all_rows)
 
 
 if __name__ == "__main__":

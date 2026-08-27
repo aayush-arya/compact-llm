@@ -107,14 +107,28 @@ pip install -r training/requirements.txt
 kaggle datasets download -d snehaanbhawal/resume-dataset -p data/raw --unzip
 
 # A free labeling-oracle key in training/.env -- one of:
-#   CEREBRAS_API_KEY  (recommended, 1M tokens/day)  https://cloud.cerebras.ai
-#   GROQ_API_KEY                                     https://console.groq.com/keys
-#   GEMINI_API_KEY    (classic AIza keys only)       https://aistudio.google.com/apikey
-echo "CEREBRAS_API_KEY=..." > training/.env
+#   CEREBRAS_API_KEY   https://cloud.cerebras.ai
+#   GROQ_API_KEY       https://console.groq.com/keys
+#   GEMINI_API_KEY     https://aistudio.google.com/apikey  (classic AIza keys only)
+echo "GROQ_API_KEY=..." > training/.env
 python training/prepare_dataset.py --input data/raw/Resume.csv --resumes 120
 # -> data/processed/{train,val,test}.jsonl  (~600 examples: 5 fit modes per resume,
 #    stratified by score band). Resumable; self-paces against free-tier rate limits.
 ```
+
+**Current checkpoint.** The version in `data/raw/generation_checkpoint.jsonl`
+(700 examples) predates the 5-mode design — it used a matching-vs-mismatched
+two-way split, so the label distribution is **bimodal** (clusters near 0 and
+near 90, ~1% in between). It's re-split stratified so train/val/test are each
+~50/50 low/high:
+
+```bash
+python training/prepare_dataset.py --resplit \
+  --checkpoint data/raw/generation_checkpoint.jsonl --out_dir data/processed
+```
+
+Regenerating with the current 5-mode script is the fix for the missing middle
+— it just needs a working oracle key (see above).
 
 ### 2. Train (Google Colab, free T4)
 
@@ -180,6 +194,13 @@ pair 0–100 with a rationale, judging only on evidence in the resume. That mean
   at this scale wasn't feasible solo. The benchmark measures whether the fine-tune
   faithfully specializes toward that labeling signal — cheaper and faster than prompting
   the larger model at inference — not whether the labels are ground truth."
+
+The checkpointed dataset is also **bimodal** (see [Reproduce](#reproduce)): it was
+built before the five-mode design, so it's mostly clear matches and clear mismatches.
+That makes the correlation numbers read as "can it separate obvious fits from obvious
+misfits" rather than "can it grade partial fits" — MAE and the base-vs-fine-tuned delta
+are still meaningful, the correlation is just easier than it would be on a smooth
+distribution. Regenerating with the current script closes that gap.
 
 The **Datasets** page shows the live score distribution so this is visible, not buried.
 
