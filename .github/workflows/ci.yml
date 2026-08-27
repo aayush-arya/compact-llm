@@ -32,9 +32,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r backend/requirements.txt
-      - name: Import check
-        run: python -c "import app.main"
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Tests
+        run: python -m pytest
         working-directory: backend
       - name: Compile training scripts
         run: python -m py_compile training/*.py
