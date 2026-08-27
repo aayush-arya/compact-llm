@@ -1,141 +1,217 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Sparkles } from "lucide-react";
-import { toast } from "sonner";
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
+import {
+  fetchBenchmark,
+  fetchDatasetStats,
+  fetchHistory,
+  type BenchmarkRow,
+  type DatasetStats,
+  type HistoryItem,
+} from "@/lib/api";
+import { buttonVariants } from "@/components/ui/button";
+import { PageHeader, SectionLabel, StatCard } from "@/components/page-primitives";
+import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
-import { streamScore } from "@/lib/api";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
-export default function ScorerPage() {
-  const [resume, setResume] = React.useState("");
-  const [jobDescription, setJobDescription] = React.useState("");
-  const [streaming, setStreaming] = React.useState(false);
-  const [rawText, setRawText] = React.useState("");
-  const [score, setScore] = React.useState<number | null>(null);
-  const [rationale, setRationale] = React.useState<string | null>(null);
-  const [latencyMs, setLatencyMs] = React.useState<number | null>(null);
-  const abortRef = React.useRef<AbortController | null>(null);
+function truncate(s: string, n = 48) {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
 
-  const canSubmit = resume.trim().length > 0 && jobDescription.trim().length > 0 && !streaming;
+export default function OverviewPage() {
+  const [dataset, setDataset] = React.useState<DatasetStats | null>(null);
+  const [benchmark, setBenchmark] = React.useState<BenchmarkRow[] | null>(null);
+  const [benchmarkMissing, setBenchmarkMissing] = React.useState(false);
+  const [history, setHistory] = React.useState<HistoryItem[] | null>(null);
+  const [historyTotal, setHistoryTotal] = React.useState(0);
 
-  async function handleScore() {
-    setStreaming(true);
-    setRawText("");
-    setScore(null);
-    setRationale(null);
-    setLatencyMs(null);
+  React.useEffect(() => {
+    fetchDatasetStats().then(setDataset).catch(() => setDataset(null));
+    fetchBenchmark()
+      .then(setBenchmark)
+      .catch(() => setBenchmarkMissing(true));
+    fetchHistory(1, 6)
+      .then((p) => {
+        setHistory(p.items);
+        setHistoryTotal(p.total);
+      })
+      .catch(() => setHistory([]));
+  }, []);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+  const ft = benchmark?.find((r) => r.approach === "fine_tuned");
+  const base = benchmark?.find((r) => r.approach === "base_zero_shot");
 
-    try {
-      await streamScore(
-        resume,
-        jobDescription,
-        (event) => {
-          if (event.type === "chunk") {
-            setRawText((prev) => prev + event.text);
-          } else {
-            setScore(event.score);
-            setRationale(event.rationale);
-            setLatencyMs(event.latency_ms);
-          }
-        },
-        controller.signal
-      );
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        toast.error("Scoring failed — is the backend running?");
-        console.error(err);
-      }
-    } finally {
-      setStreaming(false);
-    }
-  }
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Live Scorer</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Paste a resume and a job description. The fine-tuned model streams a 0-100 score
-          and a short rationale as it generates.
-        </p>
+    <div>
+      <PageHeader
+        title="Overview"
+        subtitle={today}
+        action={
+          <Link href="/score" className={cn(buttonVariants({ size: "sm" }))}>
+            Score a match <ArrowRight className="ml-1.5 h-4 w-4" />
+          </Link>
+        }
+      />
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Dataset"
+          value={dataset ? dataset.total.toLocaleString() : <Skeleton className="h-6 w-16" />}
+          sub={
+            dataset
+              ? `${dataset.splits.map((s) => s.count).join(" / ")} split`
+              : "loading"
+          }
+        />
+        <StatCard label="Base model" value="gemma-3-4b-it" sub="QLoRA r16 · 4-bit" />
+        <StatCard
+          label="Benchmark"
+          value={
+            ft ? ft.pearson.toFixed(3) : benchmarkMissing ? "not run" : <Skeleton className="h-6 w-16" />
+          }
+          sub={ft ? "Pearson r, fine-tuned" : "run eval after training"}
+        />
+        <StatCard
+          label="Requests served"
+          value={history ? historyTotal.toLocaleString() : <Skeleton className="h-6 w-12" />}
+          sub="score + compare calls"
+        />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="resume">Resume</Label>
-          <Textarea
-            id="resume"
-            placeholder="Paste resume text..."
-            className="min-h-[240px] font-mono text-xs"
-            value={resume}
-            onChange={(e) => setResume(e.target.value)}
-          />
+      <div className="mt-4 rounded-lg border border-border bg-card p-4">
+        <SectionLabel>The delta the fine-tune bought</SectionLabel>
+        {ft && base ? (
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Delta name="Pearson r" base={base.pearson} ft={ft.pearson} higherBetter />
+            <Delta name="MAE" base={base.mae} ft={ft.mae} higherBetter={false} />
+            <Delta
+              name="Latency (s)"
+              base={base.mean_latency_sec}
+              ft={ft.mean_latency_sec}
+              higherBetter={false}
+            />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            The adapter hasn&apos;t been trained and evaluated yet. Once{" "}
+            <code className="font-metric text-xs">eval_base_vs_finetuned.py</code> runs on the
+            held-out test split, the base-vs-fine-tuned deltas land here and on the{" "}
+            <Link href="/evaluation" className="text-primary underline-offset-2 hover:underline">
+              Evaluation
+            </Link>{" "}
+            page.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-border bg-card p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <SectionLabel>Recent activity</SectionLabel>
+          <Link
+            href="/history"
+            className="text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            View all →
+          </Link>
         </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="jd">Job Description</Label>
-          <Textarea
-            id="jd"
-            placeholder="Paste job description text..."
-            className="min-h-[240px] font-mono text-xs"
-            value={jobDescription}
-            onChange={(e) => setJobDescription(e.target.value)}
-          />
-        </div>
+        {history === null ? (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
+          </div>
+        ) : history.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No requests yet — try the{" "}
+            <Link href="/score" className="text-primary hover:underline">
+              Score
+            </Link>{" "}
+            page.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Resume</TableHead>
+                  <TableHead>Job Description</TableHead>
+                  <TableHead className="text-right">FT</TableHead>
+                  <TableHead className="text-right">Base</TableHead>
+                  <TableHead className="text-right">When</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {truncate(row.resume_text)}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {truncate(row.jd_text)}
+                    </TableCell>
+                    <TableCell className="font-metric text-right">{row.finetuned_score}</TableCell>
+                    <TableCell className="font-metric text-right text-muted-foreground">
+                      {row.base_score ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-metric text-right text-[11px] text-muted-foreground">
+                      {new Date(row.created_at).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
 
-      <div>
-        <Button onClick={handleScore} disabled={!canSubmit}>
-          {streaming ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Scoring...
-            </>
-          ) : (
-            <>
-              <Sparkles className="mr-2 h-4 w-4" /> Score match
-            </>
-          )}
-        </Button>
+function Delta({
+  name,
+  base,
+  ft,
+  higherBetter,
+}: {
+  name: string;
+  base: number;
+  ft: number;
+  higherBetter: boolean;
+}) {
+  const good = higherBetter ? ft >= base : ft <= base;
+  return (
+    <div>
+      <p className="label-caps">{name}</p>
+      <div className="font-metric mt-1 flex items-baseline gap-2">
+        <span className="text-xl font-semibold">{ft}</span>
+        <span className="text-xs text-muted-foreground line-through decoration-muted-foreground/40">
+          {base}
+        </span>
       </div>
-
-      {(streaming || rawText || score !== null) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span>Result</span>
-              {score !== null && (
-                <span className="text-3xl font-bold tabular-nums">{score}/100</span>
-              )}
-            </CardTitle>
-            {score !== null && <Progress value={score} className="mt-2" />}
-            {latencyMs !== null && (
-              <CardDescription>{(latencyMs / 1000).toFixed(2)}s</CardDescription>
-            )}
-          </CardHeader>
-          <CardContent>
-            {score === null && streaming && !rawText ? (
-              <div className="flex flex-col gap-2">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-5/6" />
-                <Skeleton className="h-4 w-2/3" />
-              </div>
-            ) : (
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                {rationale ?? rawText}
-                {streaming && <span className="animate-pulse">▍</span>}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      <p className={`mt-0.5 text-[11px] ${good ? "text-accent" : "text-destructive"}`}>
+        {good ? "improved" : "regressed"} vs base
+      </p>
     </div>
   );
 }

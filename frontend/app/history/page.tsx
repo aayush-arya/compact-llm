@@ -3,9 +3,9 @@
 import * as React from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { fetchHistory, type HistoryItem } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/page-primitives";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -15,7 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { fetchHistory, type HistoryItem } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 15;
 
@@ -23,12 +23,14 @@ function truncate(text: string, n = 60) {
   return text.length > n ? text.slice(0, n) + "…" : text;
 }
 
+type Filter = "all" | "comparison" | "score-only";
+
 export default function HistoryPage() {
   const [page, setPage] = React.useState(1);
   const [items, setItems] = React.useState<HistoryItem[] | null>(null);
   const [total, setTotal] = React.useState(0);
   const [sortDesc, setSortDesc] = React.useState(true);
-  const [filter, setFilter] = React.useState<"all" | "comparison" | "score-only">("all");
+  const [filter, setFilter] = React.useState<Filter>("all");
 
   React.useEffect(() => {
     setItems(null);
@@ -40,75 +42,71 @@ export default function HistoryPage() {
       .catch(() => setItems([]));
   }, [page]);
 
-  const filtered = React.useMemo(() => {
+  const rows = React.useMemo(() => {
     if (!items) return [];
-    let rows = items;
-    if (filter === "comparison") rows = rows.filter((r) => r.is_comparison);
-    if (filter === "score-only") rows = rows.filter((r) => !r.is_comparison);
-    return [...rows].sort((a, b) =>
+    let r = items;
+    if (filter === "comparison") r = r.filter((x) => x.is_comparison);
+    if (filter === "score-only") r = r.filter((x) => !x.is_comparison);
+    return [...r].sort((a, b) =>
       sortDesc ? b.finetuned_score - a.finetuned_score : a.finetuned_score - b.finetuned_score
     );
-  }, [items, sortDesc, filter]);
+  }, [items, filter, sortDesc]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">History</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Past scoring requests, newest first.
-        </p>
-      </div>
+    <div>
+      <PageHeader
+        title="History"
+        subtitle="Every score and comparison request, persisted to the database."
+        action={
+          <div className="flex gap-1.5">
+            {(["all", "comparison", "score-only"] as const).map((f) => (
+              <Button
+                key={f}
+                size="sm"
+                variant={filter === f ? "default" : "outline"}
+                onClick={() => setFilter(f)}
+              >
+                {f === "all" ? "All" : f === "comparison" ? "Compare" : "Score"}
+              </Button>
+            ))}
+          </div>
+        }
+      />
 
-      <div className="flex items-center gap-2">
-        {(["all", "comparison", "score-only"] as const).map((f) => (
-          <Button
-            key={f}
-            size="sm"
-            variant={filter === f ? "default" : "outline"}
-            onClick={() => setFilter(f)}
-          >
-            {f === "all" ? "All" : f === "comparison" ? "Comparisons" : "Score only"}
-          </Button>
-        ))}
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Requests</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {items === null ? (
-            <div className="flex flex-col gap-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
-          ) : items.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
-              No requests yet — try the Scorer or Compare page.
-            </p>
-          ) : (
-            <>
+      <div className="rounded-lg border border-border bg-card p-4">
+        {items === null ? (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : rows.length === 0 ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            Nothing to show — run a score or comparison first.
+          </p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Resume</TableHead>
                     <TableHead>Job Description</TableHead>
                     <TableHead
-                      className="cursor-pointer select-none"
+                      className="cursor-pointer select-none text-right"
                       onClick={() => setSortDesc((s) => !s)}
                     >
-                      Fine-tuned score {sortDesc ? "↓" : "↑"}
+                      FT score {sortDesc ? "↓" : "↑"}
                     </TableHead>
-                    <TableHead>Base score</TableHead>
+                    <TableHead className="text-right">Base</TableHead>
                     <TableHead>Type</TableHead>
-                    <TableHead>When</TableHead>
+                    <TableHead className="text-right">When</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((row) => (
+                  {rows.map((row) => (
                     <TableRow key={row.id}>
                       <TableCell className="max-w-[220px] text-xs text-muted-foreground">
                         {truncate(row.resume_text)}
@@ -116,52 +114,57 @@ export default function HistoryPage() {
                       <TableCell className="max-w-[220px] text-xs text-muted-foreground">
                         {truncate(row.jd_text)}
                       </TableCell>
-                      <TableCell className="font-medium tabular-nums">
+                      <TableCell className="font-metric text-right font-medium">
                         {row.finetuned_score}
                       </TableCell>
-                      <TableCell className="tabular-nums">
+                      <TableCell className="font-metric text-right text-muted-foreground">
                         {row.base_score ?? "—"}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={row.is_comparison ? "default" : "secondary"}>
+                        <span
+                          className={cn(
+                            "label-caps",
+                            row.is_comparison ? "text-primary" : "text-muted-foreground"
+                          )}
+                        >
                           {row.is_comparison ? "compare" : "score"}
-                        </Badge>
+                        </span>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
+                      <TableCell className="font-metric text-right text-[11px] text-muted-foreground">
                         {new Date(row.created_at).toLocaleString()}
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
+            </div>
 
-              <div className="flex items-center justify-between pt-4">
-                <span className="text-xs text-muted-foreground">
-                  Page {page} of {totalPages} ({total} total)
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  >
-                    <ChevronLeft className="h-4 w-4" /> Prev
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  >
-                    Next <ChevronRight className="h-4 w-4" />
-                  </Button>
-                </div>
+            <div className="flex items-center justify-between pt-4">
+              <span className="font-metric text-[11px] text-muted-foreground">
+                page {page}/{totalPages} · {total} total
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  <ChevronLeft className="h-4 w-4" /> Prev
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                >
+                  Next <ChevronRight className="h-4 w-4" />
+                </Button>
               </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

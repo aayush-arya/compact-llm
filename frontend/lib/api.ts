@@ -1,5 +1,16 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+export interface HealthResponse {
+  status: string;
+  model_backend: string;
+}
+
+export async function fetchHealth(): Promise<HealthResponse> {
+  const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`health failed: ${res.status}`);
+  return res.json();
+}
+
 export interface ScoreResult {
   score: number;
   rationale: string;
@@ -59,6 +70,29 @@ export async function fetchHistory(page = 1, pageSize = 20): Promise<HistoryPage
 export async function fetchBenchmark(): Promise<BenchmarkRow[]> {
   const res = await fetch(`${API_URL}/eval/benchmark`);
   if (!res.ok) throw new Error(`benchmark failed: ${res.status}`);
+  return res.json();
+}
+
+export interface DatasetSplit {
+  name: string;
+  count: number;
+}
+
+export interface DatasetStats {
+  available: boolean;
+  source: string;
+  labeler: string;
+  total: number;
+  splits: DatasetSplit[];
+  score_histogram: { bucket: string; count: number }[];
+  score_mean: number | null;
+  instruction: string | null;
+  samples: { input: string; output: string }[];
+}
+
+export async function fetchDatasetStats(): Promise<DatasetStats> {
+  const res = await fetch(`${API_URL}/datasets/stats`);
+  if (!res.ok) throw new Error(`dataset stats failed: ${res.status}`);
   return res.json();
 }
 
