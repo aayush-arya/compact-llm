@@ -62,7 +62,7 @@ except ImportError:
 # native REST shape; otherwise an OpenAI-compatible chat-completions endpoint.
 PROVIDERS = {
     "cerebras": {
-        "model": "llama-3.3-70b",
+        "model": "gpt-oss-120b",
         "rpm": 25,
         "url": "https://api.cerebras.ai/v1/chat/completions",
     },
@@ -380,6 +380,11 @@ def main():
         + " is set (in that order)",
     )
     ap.add_argument("--model", default=None, help="override the provider's default model")
+    ap.add_argument(
+        "--list-models",
+        action="store_true",
+        help="print the models the selected provider's key can use, then exit",
+    )
     args = ap.parse_args()
 
     keys = {p: os.environ.get(env) for p, env in PROVIDER_ENV.items()}
@@ -395,6 +400,33 @@ def main():
             "  GROQ_API_KEY=...      free, instant:       https://console.groq.com/keys\n"
             "  GEMINI_API_KEY=...    free tier:           https://aistudio.google.com/apikey"
         )
+    cfg = PROVIDERS[provider]
+
+    if args.list_models:
+        if not cfg["url"]:
+            base = "https://generativelanguage.googleapis.com/v1beta/models"
+            hdr = (
+                {"Authorization": f"Bearer {api_key}"}
+                if api_key.startswith("AQ.")
+                else {"x-goog-api-key": api_key}
+            )
+        else:
+            base = cfg["url"].rsplit("/", 2)[0] + "/models"  # .../v1/chat/completions -> .../v1/models
+            hdr = {"Authorization": f"Bearer {api_key}"}
+        r = httpx.get(base, headers=hdr, timeout=30)
+        r.raise_for_status()
+        payload = r.json()
+        rows = payload.get("data") or payload.get("models") or []
+        print("models:")
+        for m in rows:
+            print("  " + (m.get("id") or m.get("name")))
+        limits = {k: v for k, v in r.headers.items() if "ratelimit" in k.lower()}
+        if limits:
+            print("rate-limit headers:")
+            for k, v in sorted(limits.items()):
+                print(f"  {k}: {v}")
+        return
+
     if not args.input.exists():
         sys.exit(
             f"Resume CSV not found at {args.input}.\n"
@@ -412,7 +444,6 @@ def main():
     done_keys = {(d["input"][:80], d["meta"]["mode"]) for d in done}
     print(f"Resuming: {len(done)} examples already generated.")
 
-    cfg = PROVIDERS[provider]
     model = args.model or cfg["model"]
     llm = LLMClient(provider, api_key, model, cfg["rpm"], cfg["url"])
     print(f"Provider: {provider} · model: {model}")
