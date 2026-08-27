@@ -34,7 +34,7 @@ cost, latency, and quality. This project makes that comparison visible.
 ```mermaid
 flowchart LR
     subgraph Training["Training (Colab / Kaggle GPU)"]
-        A[Kaggle resume CSV] --> B[prepare_dataset.py<br/>Gemini writes 5 JDs/resume + grades]
+        A[Kaggle resume CSV] --> B[prepare_dataset.py<br/>LLM writes 5 JDs/resume + grades]
         B --> C[train / val / test .jsonl<br/>stratified by score band]
         C --> D[train_unsloth_qlora.py<br/>Gemma-3 4B + QLoRA]
         D -->|logs| WANDB[(Weights & Biases)]
@@ -80,7 +80,7 @@ flowchart LR
 
 ```
 training/
-  prepare_dataset.py        # resumes -> 5 Gemini JDs/resume + grades -> stratified JSONL
+  prepare_dataset.py        # resumes -> 5 LLM JDs/resume + grades -> stratified JSONL
   train_unsloth_qlora.py    # QLoRA fine-tune, Unsloth + W&B
   eval_base_vs_finetuned.py # base zero-shot vs few-shot vs fine-tuned, held-out test set
   export_gguf.py            # merged model -> GGUF for llama.cpp/Ollama
@@ -106,10 +106,14 @@ pip install -r training/requirements.txt
 # Kaggle "Resume Dataset": https://www.kaggle.com/datasets/snehaanbhawal/resume-dataset
 kaggle datasets download -d snehaanbhawal/resume-dataset -p data/raw --unzip
 
-echo "GEMINI_API_KEY=..." > training/.env   # free tier: https://aistudio.google.com/apikey
+# A free labeling-oracle key in training/.env -- one of:
+#   CEREBRAS_API_KEY  (recommended, 1M tokens/day)  https://cloud.cerebras.ai
+#   GROQ_API_KEY                                     https://console.groq.com/keys
+#   GEMINI_API_KEY    (classic AIza keys only)       https://aistudio.google.com/apikey
+echo "CEREBRAS_API_KEY=..." > training/.env
 python training/prepare_dataset.py --input data/raw/Resume.csv --resumes 120
 # -> data/processed/{train,val,test}.jsonl  (~600 examples: 5 fit modes per resume,
-#    stratified by score band). Resumable; self-paces against the free-tier daily cap.
+#    stratified by score band). Resumable; self-paces against free-tier rate limits.
 ```
 
 ### 2. Train (Google Colab, free T4)
@@ -162,13 +166,13 @@ See [`backend/.env.example`](backend/.env.example) for all config.
 
 ## Dataset & labeling honesty
 
-Labels are **synthetic**. For each real resume, Gemini (free tier) writes five job
-descriptions spanning the fit spectrum — strong / solid / partial / weak / mismatch —
-then grades each (resume, JD) pair 0–100 with a rationale, judging only on evidence in
-the resume. That means:
+Labels are **synthetic**. For each real resume, a large instruction model
+(Llama-3.3-70B via Cerebras/Groq, or Gemini) writes five job descriptions spanning the
+fit spectrum — strong / solid / partial / weak / mismatch — then grades each (resume, JD)
+pair 0–100 with a rationale, judging only on evidence in the resume. That means:
 
-- The dataset teaches the small model to imitate *Gemini's judgment* of resume/JD fit,
-  not verified hiring outcomes or real recruiter labels.
+- The dataset teaches the small model to imitate *the oracle model's judgment* of
+  resume/JD fit, not verified hiring outcomes or real recruiter labels.
 - It's a legitimate way to prove the fine-tuning mechanics work and to measure a small
   model approaching a much larger one's judgment on a narrow task — not evidence the
   scores are correct in an absolute, real-world-hiring sense.
@@ -201,7 +205,7 @@ Then put the live URL, a demo GIF, and the benchmark table at the top of this RE
 
 ## What I'd do differently with more data/compute
 
-- Real recruiter labels (even a few hundred) blended in, to check whether Gemini's
+- Real recruiter labels (even a few hundred) blended in, to check whether the oracle's
   judgments and human judgments actually agree.
 - A larger held-out test set — 10% of ~600 examples gives noisy correlation estimates.
 - Full fine-tuning or a larger LoRA rank on more compute, to see where the quality/cost
