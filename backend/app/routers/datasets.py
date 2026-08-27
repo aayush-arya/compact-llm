@@ -11,9 +11,13 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from app.config import get_settings
+
 router = APIRouter(tags=["datasets"])
 
-DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "processed"
+DATA_DIR = Path(
+    get_settings().dataset_dir or Path(__file__).resolve().parents[3] / "data" / "processed"
+)
 SPLIT_FILES = ("train", "val", "test")
 _SCORE_RE = re.compile(r"Score:\s*(\d{1,3})")
 

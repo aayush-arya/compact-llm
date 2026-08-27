@@ -27,20 +27,27 @@ type Filter = "all" | "comparison" | "score-only";
 
 export default function HistoryPage() {
   const [page, setPage] = React.useState(1);
-  const [items, setItems] = React.useState<HistoryItem[] | null>(null);
-  const [total, setTotal] = React.useState(0);
+  const [data, setData] = React.useState<{
+    page: number;
+    items: HistoryItem[];
+    total: number;
+  } | null>(null);
   const [sortDesc, setSortDesc] = React.useState(true);
   const [filter, setFilter] = React.useState<Filter>("all");
 
   React.useEffect(() => {
-    setItems(null);
+    let cancelled = false;
     fetchHistory(page, PAGE_SIZE)
-      .then((res) => {
-        setItems(res.items);
-        setTotal(res.total);
-      })
-      .catch(() => setItems([]));
+      .then((res) => !cancelled && setData({ page, items: res.items, total: res.total }))
+      .catch(() => !cancelled && setData({ page, items: [], total: 0 }));
+    return () => {
+      cancelled = true;
+    };
   }, [page]);
+
+  const loading = !data || data.page !== page;
+  const items = loading ? null : data.items;
+  const total = data?.total ?? 0;
 
   const rows = React.useMemo(() => {
     if (!items) return [];

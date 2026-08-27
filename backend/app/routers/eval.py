@@ -5,12 +5,15 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from app.config import get_settings
 from app.db.schemas import EvalRunStatus
 
 router = APIRouter(tags=["eval"])
 
-BENCHMARK_JSON = Path(__file__).resolve().parents[3] / "docs" / "benchmark_results.json"
-TRAINING_DIR = Path(__file__).resolve().parents[3] / "training"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_settings = get_settings()
+BENCHMARK_JSON = Path(_settings.benchmark_json_path or _REPO_ROOT / "docs" / "benchmark_results.json")
+TRAINING_DIR = Path(_settings.training_dir or _REPO_ROOT / "training")
 
 _run_state = {"status": "idle", "detail": ""}
 
