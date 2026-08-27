@@ -4,23 +4,26 @@ Build the resume <-> job-description relevance dataset.
 Pipeline:
   1. Read real resumes from the Kaggle "Resume Dataset" CSV
      (https://www.kaggle.com/datasets/snehaanbhawal/resume-dataset).
-  2. For each resume, ask Gemini to write five job descriptions spanning the
-     fit spectrum -- from a near-ideal match down to a clear mismatch -- so the
-     label distribution covers the whole 0-100 range instead of clustering at
-     the extremes (the failure mode of an earlier "matching vs mismatched"
+  2. For each resume, ask a large LLM to write five job descriptions spanning
+     the fit spectrum -- from a near-ideal match down to a clear mismatch -- so
+     the label distribution covers the whole 0-100 range instead of clustering
+     at the extremes (the failure mode of an earlier "matching vs mismatched"
      two-way design).
-  3. In the same call, Gemini scores the (resume, JD) pair 0-100 with a short
+  3. In the same call, the LLM scores the (resume, JD) pair 0-100 with a short
      rationale, judging only on evidence in the resume.
   4. Emit instruction-tuning examples and split 80/10/10, stratified by score
      band so train / val / test each span the full range.
 
 This is a synthetic-label dataset. Documented explicitly (see README) as a
-limitation: labels reflect Gemini's judgment, not verified hiring outcomes.
-Good enough to prove a fine-tune can specialize a small model toward this
-scoring behavior; not a substitute for real recruiter labels.
+limitation: labels reflect the oracle model's judgment, not verified hiring
+outcomes. Good enough to prove a fine-tune can specialize a small model toward
+this scoring behavior; not a substitute for real recruiter labels.
+
+Provider: set GROQ_API_KEY (https://console.groq.com/keys -- free, instant) or
+GEMINI_API_KEY (https://aistudio.google.com/apikey -- free tier) in
+training/.env. The script auto-selects; --provider forces one.
 
 Usage:
-    # put GEMINI_API_KEY=... in training/.env (git-ignored), or export it
     python prepare_dataset.py --input data/raw/Resume.csv --resumes 120
     # -> data/processed/{train,val,test}.jsonl  (~600 examples: 5 per resume)
 
@@ -41,9 +44,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
-from google import genai
-from google.genai.errors import APIError
 from tqdm import tqdm
 
 try:  # let the key live in training/.env instead of the shell environment
@@ -53,12 +55,14 @@ try:  # let the key live in training/.env instead of the shell environment
 except ImportError:
     pass
 
-# gemini-3.6-flash's free tier is capped at 20 requests/day -- unusable here.
-# gemini-3.5-flash-lite's free tier allows 15 requests/minute AND 500
-# requests/day. One combined call per example (JD generation + grading) keeps
-# each example at a single request, so the daily cap buys ~500 examples/day.
-MODEL = "gemini-3.5-flash-lite"
-MAX_REQUESTS_PER_MINUTE = 14
+# Per-provider defaults. Rate limits sit well under each free tier's published
+# caps (Groq: ~30 req/min plus a tokens/min cap; Gemini gemini-3.5-flash-lite:
+# 15 req/min plus 500 req/day). One combined call per example (JD generation +
+# grading) keeps each example at a single request.
+PROVIDERS = {
+    "groq": {"model": "llama-3.3-70b-versatile", "rpm": 14},
+    "gemini": {"model": "gemini-3.5-flash-lite", "rpm": 14},
+}
 
 # Five job-description "distances" from the resume. The grader still scores each
 # pair independently on evidence (see COMBINED_PROMPT); the mode only steers how
@@ -150,19 +154,72 @@ class RateLimiter:
             time.sleep(sleep_for)
 
 
-rate_limiter = RateLimiter(MAX_REQUESTS_PER_MINUTE)
+class LLMClient:
+    """One combined JD-generation + grading call, against Groq or Gemini.
 
+    Both are OpenAI-ish JSON APIs reached over plain HTTP -- Gemini's own SDK
+    now trips over its new `AQ.`-prefixed keys, so this talks REST directly and
+    picks the auth header per key format. Retries 429/5xx with backoff; for
+    Gemini's hard daily cap it sleeps until the Pacific-midnight reset.
+    """
 
-def call_gemini(client: genai.Client, prompt: str) -> str:
-    backoff = 5.0
-    attempt = 0
-    while True:
-        rate_limiter.acquire()
-        try:
-            resp = client.models.generate_content(model=MODEL, contents=prompt)
-            return (resp.text or "").strip()
-        except APIError as e:
-            if "PerDay" in str(e):
+    def __init__(self, provider: str, api_key: str, model: str, rpm: int):
+        self.provider = provider
+        self.api_key = api_key
+        self.model = model
+        self.limiter = RateLimiter(rpm)
+        self.http = httpx.Client(timeout=120)
+
+    def _request(self, prompt: str) -> httpx.Response:
+        if self.provider == "groq":
+            return self.http.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                },
+            )
+        # gemini: AQ. auth keys want a Bearer header; classic AIza keys use x-goog-api-key
+        header = (
+            {"Authorization": f"Bearer {self.api_key}"}
+            if self.api_key.startswith("AQ.")
+            else {"x-goog-api-key": self.api_key}
+        )
+        return self.http.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+            headers=header,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+        )
+
+    @staticmethod
+    def _extract(provider: str, data: dict) -> str:
+        if provider == "groq":
+            return data["choices"][0]["message"]["content"].strip()
+        parts = data["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts).strip()
+
+    def generate(self, prompt: str) -> str:
+        backoff = 5.0
+        attempt = 0
+        while True:
+            self.limiter.acquire()
+            try:
+                resp = self._request(prompt)
+            except (httpx.TransportError, OSError):
+                if attempt < 6:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 1.8, 60)
+                    attempt += 1
+                    continue
+                raise
+
+            if resp.status_code == 200:
+                return self._extract(self.provider, resp.json())
+
+            body = resp.text
+            if self.provider == "gemini" and "PerDay" in body:
                 wait_s = _seconds_until_pacific_midnight() + 300
                 print(
                     f"  [info] daily free-tier quota hit -- sleeping ~{wait_s / 3600:.1f}h until reset...",
@@ -170,21 +227,14 @@ def call_gemini(client: genai.Client, prompt: str) -> str:
                     flush=True,
                 )
                 time.sleep(wait_s)
-                continue  # doesn't count against the attempt budget below
-            if e.code in (429, 500, 503) and attempt < 6:
-                time.sleep(backoff)
+                continue  # doesn't count against the attempt budget
+            if resp.status_code in (429, 500, 502, 503) and attempt < 6:
+                retry_after = float(resp.headers.get("retry-after", 0) or 0)
+                time.sleep(max(retry_after, backoff))
                 backoff = min(backoff * 1.8, 60)
                 attempt += 1
                 continue
-            raise
-        except OSError:
-            # transient network/DNS hiccup (e.g. brief connectivity loss)
-            if attempt < 6:
-                time.sleep(backoff)
-                backoff = min(backoff * 1.8, 60)
-                attempt += 1
-                continue
-            raise
+            raise RuntimeError(f"{self.provider} {resp.status_code}: {body[:200]}")
 
 
 def parse_combined(text: str) -> tuple[str, int, str] | None:
@@ -199,8 +249,8 @@ def parse_combined(text: str) -> tuple[str, int, str] | None:
     return jd, score, rationale
 
 
-def process_one(client: genai.Client, resume: str, mode: str) -> dict | None:
-    raw = call_gemini(client, COMBINED_PROMPT.format(mode_guidance=MODES[mode], resume=resume))
+def process_one(llm: LLMClient, resume: str, mode: str) -> dict | None:
+    raw = llm.generate(COMBINED_PROMPT.format(mode_guidance=MODES[mode], resume=resume))
     parsed = parse_combined(raw)
     if parsed is None:
         return None
@@ -289,13 +339,27 @@ def main():
         help="concurrency is capped by the global rate limiter regardless of this value",
     )
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--provider",
+        choices=["auto", "groq", "gemini"],
+        default="auto",
+        help="labeling oracle; 'auto' picks groq if GROQ_API_KEY is set, else gemini",
+    )
+    ap.add_argument("--model", default=None, help="override the provider's default model")
     args = ap.parse_args()
 
-    if not os.environ.get("GEMINI_API_KEY"):
+    groq_key = os.environ.get("GROQ_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if args.provider == "auto":
+        provider = "groq" if groq_key else "gemini" if gemini_key else None
+    else:
+        provider = args.provider
+    api_key = groq_key if provider == "groq" else gemini_key
+    if not provider or not api_key:
         sys.exit(
-            "Set GEMINI_API_KEY before running this script -- either export it or put\n"
-            "  GEMINI_API_KEY=...\n"
-            "in training/.env (git-ignored). Free tier: https://aistudio.google.com/apikey"
+            "No API key found. Put ONE of these in training/.env (git-ignored):\n"
+            "  GROQ_API_KEY=...     free, instant: https://console.groq.com/keys\n"
+            "  GEMINI_API_KEY=...   free tier:     https://aistudio.google.com/apikey"
         )
     if not args.input.exists():
         sys.exit(
@@ -314,7 +378,9 @@ def main():
     done_keys = {(d["input"][:80], d["meta"]["mode"]) for d in done}
     print(f"Resuming: {len(done)} examples already generated.")
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    model = args.model or PROVIDERS[provider]["model"]
+    llm = LLMClient(provider, api_key, model, PROVIDERS[provider]["rpm"])
+    print(f"Provider: {provider} · model: {model}")
     ckpt_f = open(args.checkpoint, "a", encoding="utf-8")
 
     def task(job):
@@ -323,7 +389,7 @@ def main():
         if key in done_keys:
             return None
         try:
-            return process_one(client, resume, mode)
+            return process_one(llm, resume, mode)
         except Exception as e:  # noqa: BLE001 - one bad example shouldn't kill the run
             print(f"  [warn] failed one example ({mode}): {e}", file=sys.stderr)
             return None
@@ -337,6 +403,11 @@ def main():
     ckpt_f.close()
 
     all_rows = load_checkpoint(args.checkpoint)
+    if not all_rows:
+        sys.exit(
+            "No examples generated -- nothing to split. Check the errors above "
+            "(a 401 means the API key in training/.env is wrong or the wrong type)."
+        )
     splits = stratified_split(all_rows, args.seed)
     for name, rows in splits.items():
         out_path = args.out_dir / f"{name}.jsonl"

@@ -11,6 +11,7 @@ scipy
 sentencepiece
 protobuf
 google-genai>=0.3.0
+httpx
 pandas
 scikit-learn
 tqdm
