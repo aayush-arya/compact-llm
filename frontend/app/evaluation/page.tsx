@@ -117,10 +117,24 @@ export default function EvaluationPage() {
           />
           <StatCard
             label="Rationale 1–5 ↑"
-            value={ft.rationale_quality_1_5.toFixed(2)}
-            delta={pct(base.rationale_quality_1_5, ft.rationale_quality_1_5)}
-            deltaGood={ft.rationale_quality_1_5 >= base.rationale_quality_1_5}
-            sub={`base ${base.rationale_quality_1_5.toFixed(2)}`}
+            value={
+              ft.rationale_quality_1_5 !== null ? ft.rationale_quality_1_5.toFixed(2) : "—"
+            }
+            delta={
+              ft.rationale_quality_1_5 !== null && base.rationale_quality_1_5 !== null
+                ? pct(base.rationale_quality_1_5, ft.rationale_quality_1_5)
+                : undefined
+            }
+            deltaGood={
+              ft.rationale_quality_1_5 !== null && base.rationale_quality_1_5 !== null
+                ? ft.rationale_quality_1_5 >= base.rationale_quality_1_5
+                : undefined
+            }
+            sub={
+              base.rationale_quality_1_5 !== null
+                ? `base ${base.rationale_quality_1_5.toFixed(2)}`
+                : "judge off"
+            }
           />
           <StatCard
             label="Latency ↓"
@@ -169,7 +183,9 @@ export default function EvaluationPage() {
                   <TableCell className="font-metric text-right">{r.pearson}</TableCell>
                   <TableCell className="font-metric text-right">{r.spearman}</TableCell>
                   <TableCell className="font-metric text-right">{r.mae}</TableCell>
-                  <TableCell className="font-metric text-right">{r.rationale_quality_1_5}</TableCell>
+                  <TableCell className="font-metric text-right">
+                    {r.rationale_quality_1_5 ?? "—"}
+                  </TableCell>
                   <TableCell className="font-metric text-right">{r.mean_latency_sec}s</TableCell>
                 </TableRow>
               ))}

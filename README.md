@@ -130,24 +130,27 @@ python training/prepare_dataset.py --resplit \
 Regenerating with the current 5-mode script is the fix for the missing middle
 — it just needs a working oracle key (see above).
 
-### 2. Train (Google Colab, free T4)
+### 2. Train + evaluate (Google Colab, free T4)
 
-1. New Colab notebook, T4 GPU runtime.
-2. Install the packages in `training/requirements.txt`.
-3. Upload `data/processed/{train,val}.jsonl` and `training/train_unsloth_qlora.py`.
-4. Set `WANDB_API_KEY` and `HF_TOKEN` (Gemma-3 is gated — accept the license on the Hub first).
-5. `!python train_unsloth_qlora.py`
-6. Download `outputs/adapter/` and `outputs/merged/` back into the repo.
+Open [`training/train_colab.ipynb`](training/train_colab.ipynb) in Colab
+([open in Colab](https://colab.research.google.com/github/aayush-arya/compact-llm/blob/main/training/train_colab.ipynb)),
+set the runtime to **T4 GPU**, add `HF_TOKEN` as a Colab secret (accept the
+[Gemma-3 license](https://huggingface.co/google/gemma-3-4b-it) first), then
+**Run all**. It trains, evaluates against the base model, and hands you a zip
+with `outputs/adapter`, `outputs/merged`, and `docs/benchmark_results.json`.
 
-### 3. Evaluate
+Optional secrets: `WANDB_API_KEY` (loss curves), `GROQ_API_KEY` (the eval
+rationale judge — otherwise `rationale_quality` is reported as null).
+
+To run the pieces by hand instead:
 
 ```bash
-cd training
-python eval_base_vs_finetuned.py --adapter_dir ../outputs/adapter
-# writes ../docs/benchmark_results.json (served at /eval/benchmark) and benchmark_table.md
+python training/train_unsloth_qlora.py                                  # -> outputs/
+cd training && python eval_base_vs_finetuned.py --adapter_dir ../outputs/adapter
+# writes ../docs/benchmark_results.json (served at /eval/benchmark) + benchmark_table.md
 ```
 
-### 4. Run the app locally
+### 3. Run the app locally
 
 ```bash
 docker compose up --build

@@ -47,7 +47,7 @@ export interface BenchmarkRow {
   pearson: number;
   spearman: number;
   mae: number;
-  rationale_quality_1_5: number;
+  rationale_quality_1_5: number | null;
   mean_latency_sec: number;
 }
 
