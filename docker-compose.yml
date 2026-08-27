@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: scorer
       POSTGRES_DB: resume_jd_scorer
     ports:
-      - "5432:5432"
+      # Host port is overridable (POSTGRES_PORT) so this doesn't clash with a
+      # Postgres you already run locally. The container port stays 5432.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,20 +29,20 @@ services:
       # mock | transformers | ollama -- see backend/.env.example for all options.
       # Defaults to "mock" so `docker compose up` works out of the box with no GPU/weights.
       MODEL_BACKEND: ${MODEL_BACKEND:-mock}
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      CORS_ORIGINS: '["http://localhost:${FRONTEND_PORT:-3000}"]'
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
     restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
 
 volumes:
   postgres_data:
