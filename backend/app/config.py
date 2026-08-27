@@ -21,7 +21,12 @@ class Settings(BaseSettings):
     ollama_base_model: str = "gemma3:4b"
 
     gemini_api_key: str | None = None
+
+    # Explicit allowed origins (production frontend URL goes here), plus a regex
+    # that waves through any localhost port so `next dev` works no matter which
+    # port it lands on during local development.
     cors_origins: list[str] = ["http://localhost:3000"]
+    cors_origin_regex: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 
 
 @lru_cache
