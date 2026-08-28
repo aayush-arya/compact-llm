@@ -141,10 +141,13 @@ def evaluate_approach(name: str, gen_fn, test_rows: list[dict], judge) -> dict:
 
 
 def main():
+    # Defaults resolve against the repo root, so the script runs from anywhere
+    # (training/, repo root, a notebook cwd) -- explicit args still override.
+    repo = Path(__file__).resolve().parents[1]
     ap = argparse.ArgumentParser()
-    ap.add_argument("--test_file", default="data/processed/test.jsonl")
+    ap.add_argument("--test_file", default=str(repo / "data/processed/test.jsonl"))
     ap.add_argument("--base_model", default="unsloth/gemma-3-4b-it-bnb-4bit")
-    ap.add_argument("--adapter_dir", default="outputs/adapter")
+    ap.add_argument("--adapter_dir", default=str(repo / "outputs/adapter"))
     ap.add_argument(
         "--judge",
         choices=["auto", "off", *PROVIDER_PRIORITY],
@@ -154,8 +157,8 @@ def main():
     )
     ap.add_argument("--judge_model", default=None, help="override the judge provider's model")
     ap.add_argument("--max_examples", type=int, default=None)
-    ap.add_argument("--out_json", default="../docs/benchmark_results.json")
-    ap.add_argument("--out_md", default="../docs/benchmark_table.md")
+    ap.add_argument("--out_json", default=str(repo / "docs/benchmark_results.json"))
+    ap.add_argument("--out_md", default=str(repo / "docs/benchmark_table.md"))
     args = ap.parse_args()
 
     from unsloth import FastLanguageModel

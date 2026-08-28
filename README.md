@@ -145,9 +145,9 @@ rationale judge — otherwise `rationale_quality` is reported as null).
 To run the pieces by hand instead:
 
 ```bash
-python training/train_unsloth_qlora.py                                  # -> outputs/
-cd training && python eval_base_vs_finetuned.py --adapter_dir ../outputs/adapter
-# writes ../docs/benchmark_results.json (served at /eval/benchmark) + benchmark_table.md
+python training/train_unsloth_qlora.py            # -> outputs/adapter, outputs/merged
+python training/eval_base_vs_finetuned.py         # -> docs/benchmark_results.json (+ .md)
+# both run from the repo root; benchmark_results.json is what /eval/benchmark serves
 ```
 
 ### 3. Run the app locally
