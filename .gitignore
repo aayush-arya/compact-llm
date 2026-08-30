@@ -17,12 +17,18 @@ next-env.d.ts
 !.env.example
 !.env.local.example
 
-# Data & model artifacts (large; regenerate via training/ scripts)
+# Data & model artifacts
 backend/data.db
 data/raw/*
-data/processed/*
 !data/raw/.gitkeep
+# The processed splits (~6 MB) ARE committed so training clones-and-goes.
+# Source resumes: Kaggle snehaanbhawal/resume-dataset, CC0. Regenerate with
+# training/prepare_dataset.py.
+data/processed/*
 !data/processed/.gitkeep
+!data/processed/train.jsonl
+!data/processed/val.jsonl
+!data/processed/test.jsonl
 training/outputs/
 training/data/
 outputs/

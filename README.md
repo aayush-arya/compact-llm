@@ -130,17 +130,23 @@ python training/prepare_dataset.py --resplit \
 Regenerating with the current 5-mode script is the fix for the missing middle
 — it just needs a working oracle key (see above).
 
-### 2. Train + evaluate (Google Colab, free T4)
+### 2. Train + evaluate (free GPU notebook)
 
-Open [`training/train_colab.ipynb`](training/train_colab.ipynb) in Colab
-([open in Colab](https://colab.research.google.com/github/aayush-arya/compact-llm/blob/main/training/train_colab.ipynb)),
-set the runtime to **T4 GPU**, add `HF_TOKEN` as a Colab secret (accept the
-[Gemma-3 license](https://huggingface.co/google/gemma-3-4b-it) first), then
-**Run all**. It trains, evaluates against the base model, and hands you a zip
-with `outputs/adapter`, `outputs/merged`, and `docs/benchmark_results.json`.
+The dataset ships in the repo, so both notebooks are clone + **Run all**. They
+train the QLoRA adapter, evaluate it against the base model, and hand back a zip
+with `outputs/adapter` + `docs/benchmark_results.json`.
 
-Optional secrets: `WANDB_API_KEY` (loss curves), `GROQ_API_KEY` (the eval
-rationale judge — otherwise `rationale_quality` is reported as null).
+- **[`training/train_kaggle.ipynb`](training/train_kaggle.ipynb)** — **recommended**.
+  Kaggle gives 30 GPU-hrs/week and rarely disconnects; the ~2h run finishes
+  comfortably. Set Accelerator = GPU, Internet = On, add `HF_TOKEN` as a secret.
+- **[`training/train_colab.ipynb`](training/train_colab.ipynb)**
+  ([open in Colab](https://colab.research.google.com/github/aayush-arya/compact-llm/blob/main/training/train_colab.ipynb))
+  — works, but Colab's free tier caps GPU at ~3–4h/day and disconnects on the
+  limit, which is tight for this run.
+
+First accept the [Gemma-3 license](https://huggingface.co/google/gemma-3-4b-it)
+and create an HF **read** token. Optional secrets: `WANDB_API_KEY` (loss curves),
+`GROQ_API_KEY` (eval rationale judge — otherwise `rationale_quality` is null).
 
 To run the pieces by hand instead:
 
