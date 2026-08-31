@@ -44,3 +44,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Editor/agent-tool local config - not part of the project
+.claude/
