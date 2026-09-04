@@ -34,8 +34,8 @@ def main():
     ap.add_argument("--val_file", default="data/processed/val.jsonl")
     ap.add_argument("--output_dir", default="outputs")
     ap.add_argument("--max_seq_length", type=int, default=2048)
-    ap.add_argument("--epochs", type=float, default=3)
-    ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--epochs", type=float, default=2)
+    ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--per_device_batch_size", type=int, default=2)
     ap.add_argument("--grad_accum", type=int, default=4)
     ap.add_argument("--lora_r", type=int, default=16)
@@ -45,6 +45,7 @@ def main():
     args = ap.parse_args()
 
     from unsloth import FastLanguageModel  # imported late: patches transformers on import
+    from unsloth.chat_templates import train_on_responses_only
     import torch
     from trl import SFTTrainer, SFTConfig
 
@@ -90,16 +91,17 @@ def main():
             per_device_train_batch_size=args.per_device_batch_size,
             per_device_eval_batch_size=args.per_device_batch_size,
             gradient_accumulation_steps=args.grad_accum,
-            warmup_ratio=0.05,
+            warmup_ratio=0.1,
+            max_grad_norm=0.5,          # the r16 LoRA diverges without tight clipping here
             num_train_epochs=args.epochs,
             learning_rate=args.lr,
             fp16=not torch.cuda.is_bf16_supported(),
             bf16=torch.cuda.is_bf16_supported(),
-            logging_steps=10,
+            logging_steps=5,
             eval_strategy="steps",
-            eval_steps=50,
+            eval_steps=25,
             save_strategy="steps",
-            save_steps=50,
+            save_steps=25,
             save_total_limit=2,
             optim="adamw_8bit",
             weight_decay=0.01,
@@ -109,6 +111,16 @@ def main():
             report_to=report_to,
             run_name=args.run_name,
         ),
+    )
+
+    # Mask the prompt from the loss -- otherwise the ~40-token "Score: N\n
+    # Rationale: ..." target is <5% of each sequence and the model barely
+    # learns the output format. This is the fix for a fine-tune that trains
+    # but then won't emit "Score: N" at inference.
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part="<start_of_turn>user\n",
+        response_part="<start_of_turn>model\n",
     )
 
     trainer.train()
