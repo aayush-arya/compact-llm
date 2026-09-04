@@ -88,14 +88,19 @@ def parse_output(text: str) -> tuple[int | None, str]:
 
 def run_hf_generation(model, tokenizer, prompt: str, max_new_tokens: int = 150) -> tuple[str, float]:
     import torch
-    inputs = tokenizer([f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"],
-                        return_tensors="pt").to(model.device)
+
+    # Gemma-3 is multimodal, so from_pretrained sometimes hands back a processor
+    # whose __call__ maps a bare positional arg to `images`. Unwrap to the text
+    # tokenizer so this stays a plain text-generation call.
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    inputs = tok([f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"],
+                 return_tensors="pt").to(model.device)
     start = time.perf_counter()
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=max_new_tokens, use_cache=True,
-                              do_sample=False, temperature=1.0)
+                              do_sample=False)
     latency = time.perf_counter() - start
-    text = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+    text = tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
     return text, latency
 
 
@@ -103,10 +108,15 @@ def evaluate_approach(name: str, gen_fn, test_rows: list[dict], judge) -> dict:
     """`judge` is an LLMClient (from prepare_dataset) or None. When None, the
     rationale-quality metric is skipped and every other metric still reported."""
     preds, labels, latencies, judge_scores = [], [], [], []
-    for row in tqdm(test_rows, desc=name):
+    unparsed = 0
+    for i, row in enumerate(tqdm(test_rows, desc=name)):
         gold_score, _ = parse_output(row["output"])
         pred_text, latency = gen_fn(row)
         pred_score, pred_rationale = parse_output(pred_text)
+        if i < 2:
+            print(f"\n  [{name} sample {i}] pred_score={pred_score}  raw: {pred_text[:160]!r}")
+        if pred_score is None:
+            unparsed += 1
         if pred_score is None or gold_score is None:
             continue
         preds.append(pred_score)
@@ -123,10 +133,13 @@ def evaluate_approach(name: str, gen_fn, test_rows: list[dict], judge) -> dict:
             except Exception:  # noqa: BLE001 - a judge hiccup shouldn't sink the run
                 judge_scores.append(None)
 
+    if unparsed:
+        print(f"  [{name}] {unparsed}/{len(test_rows)} outputs had no parseable score")
+
     preds_a, labels_a = np.array(preds), np.array(labels)
     pearson, _ = pearsonr(preds_a, labels_a) if len(preds_a) > 1 else (float("nan"), None)
     spearman, _ = spearmanr(preds_a, labels_a) if len(preds_a) > 1 else (float("nan"), None)
-    mae = float(np.mean(np.abs(preds_a - labels_a)))
+    mae = float(np.mean(np.abs(preds_a - labels_a))) if len(preds_a) else float("nan")
 
     graded = [s for s in judge_scores if s is not None]
     return {
@@ -200,14 +213,17 @@ def main():
         test_rows, judge,
     ))
 
-    print("Loading fine-tuned adapter...")
-    ft_model, ft_tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.adapter_dir, max_seq_length=2048, dtype=None, load_in_4bit=True,
-    )
-    FastLanguageModel.for_inference(ft_model)
+    print(f"Attaching LoRA adapter from {args.adapter_dir} ...")
+    from peft import PeftModel
+
+    # Attach the adapter to the SAME base that just produced valid base-model
+    # output, rather than reloading from the adapter dir (which can silently not
+    # apply the weights and hands back a processor instead of a tokenizer).
+    # base_model already went through for_inference(); wrapping it is enough.
+    ft_model = PeftModel.from_pretrained(base_model, args.adapter_dir)
     results.append(evaluate_approach(
         "fine_tuned",
-        lambda row: run_hf_generation(ft_model, ft_tokenizer, f"{row['instruction']}\n\n{row['input']}"),
+        lambda row: run_hf_generation(ft_model, tokenizer, f"{row['instruction']}\n\n{row['input']}"),
         test_rows, judge,
     ))
 
